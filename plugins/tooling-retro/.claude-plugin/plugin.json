@@ -1,0 +1,13 @@
+{
+  "name": "tooling-retro",
+  "version": "0.2.2",
+  "description": "Observes sessions for moments where skills, agents or repo tooling let the agent down, pushes structured observations to chore/tooling-retro and runs /tooling-retro over them",
+  "userConfig": {
+    "push": {
+      "type": "boolean",
+      "title": "Push observations",
+      "description": "Push observations and session stats to chore/tooling-retro. Off: they stay in .git/tooling-retro/",
+      "default": true
+    }
+  }
+}
