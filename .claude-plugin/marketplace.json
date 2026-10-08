@@ -11,7 +11,7 @@
       "name": "tooling-retro",
       "source": "./plugins/tooling-retro",
       "description": "Observes sessions for moments where skills, agents or repo tooling let the agent down, pushes structured observations to chore/tooling-retro and runs /tooling-retro over them",
-      "version": "0.2.2"
+      "version": "0.3.0"
     }
   ]
 }

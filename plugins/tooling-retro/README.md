@@ -58,8 +58,14 @@ repository's call. A 403 or 407 on push stops pushing for the rest of the sessio
 **Retro.** `/tooling-retro [focus]` reads the observations and stats no earlier retro covered,
 takes an inventory of the repository's tooling, groups observations by tooling and category, and
 turns patterns into proposals. A proposal needs observations from at least two sessions, or one
-high-confidence observation backed by the stats. The report goes to `retros/<day>.md` on the same
-branch. Proposals are only implemented after the person accepts them, on a normal working branch.
+high-confidence observation backed by the stats. Each proposal comes with one or two variants that
+differ in substance. The report goes to `retros/<day>.md` on the same branch.
+
+**Decisions.** The retro asks about each proposal on its own: a variant, Reject or Later. Every
+answer goes to `decisions.jsonl` on the branch before anything is implemented. Later retros read
+that file first: a rejected proposal does not come back, a later one does, and an accepted one
+returns only as a follow-up when the problem persists after the change. Accepted proposals are
+implemented on a normal working branch.
 
 Nothing in the mod is specific to one repository: it reads whatever tooling the repository has.
 
