@@ -25,6 +25,7 @@ declare module 'claude-code' {
       showAllWaiting: boolean
       showSnoozed: boolean
       snoozeMenuFor: string | null
+      showErrorDetail: boolean
     }
   }
 }

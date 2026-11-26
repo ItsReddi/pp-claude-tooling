@@ -17,7 +17,7 @@
       "name": "inbox",
       "source": "./plugins/inbox",
       "description": "Pane beside the chat that lists your Claude Code cloud sessions that are running, recently active or waiting on you, with a count in the status line and a toast when a session starts waiting",
-      "version": "0.2.0"
+      "version": "0.2.1"
     }
   ]
 }

@@ -7,7 +7,9 @@ Install with `/plugin install inbox@pp-claude-tooling`. The [marketplace README]
 explains how to add the marketplace.
 
 It only works in Claude Code cloud sessions. The mod reads the session list from the
-`claude-code-remote` MCP server, and a local terminal session has no such server.
+`claude-code-remote` MCP server, and a local session, in the terminal or in VS Code, has no such
+server. There the mod checks for the server at session start, opens no pane and sets no status
+line, and `/inbox` says that it needs a cloud session.
 
 ## What it shows
 
@@ -59,6 +61,15 @@ A session whose turn has ended but whose subagents still work reads as idle with
 `working`. Running now counts it while that column is set and the session was updated in the last
 15 minutes, and its card says `background work`. The 15 minutes keep a column that never clears
 from holding a session there for good.
+
+If a load fails, the mod tries once more after 30 seconds and otherwise waits for the next
+five-minute load. The last list stays in the pane, and a red `Connection error` appears at the top
+right. Pressing it shows the error message. Only when no list has loaded yet does the pane show
+the error in place of the list.
+
+The five-minute timer runs in every session. In a session without the `claude-code-remote`
+server each tick only checks for the server, so a cloud session whose server connects late still
+opens the pane at the next tick.
 
 The mod keeps the list and the fold-out state in `$.state` for the current session and writes
 nothing anywhere else.
