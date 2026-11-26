@@ -99,17 +99,18 @@ test('lists waiting and working sessions as links, on every surface', async ($, 
 
 const at = (hoursAgo: number) => new Date(NOW - hoursAgo * 3600000).toISOString()
 
-test('waiting is oldest first; running is the session status alone; recent is idle within three hours', () => {
+test('waiting is oldest first; running includes background work updated in the last 15 minutes; recent is the rest of the last three hours', () => {
   const raw = [
     ...[1, 9, 3, 7, 5, 2].map(h => ({ id: `w${h}`, title: `w${h}`, status_bucket: 'SESSION_STATUS_BUCKET_BLOCKED', updated_at: at(h) })),
     { id: 'old-running', title: 'old-running', session_status: 'SESSION_STATUS_RUNNING', updated_at: at(30) },
     { id: 'idle-4h', title: 'idle-4h', status_bucket: 'SESSION_STATUS_BUCKET_COMPLETED', updated_at: at(4) },
     { id: 'stale-bucket', title: 'stale-bucket', session_status: 'SESSION_STATUS_IDLE', status_bucket: 'SESSION_STATUS_BUCKET_WORKING', updated_at: at(10) },
+    { id: 'subagents', title: 'subagents', session_status: 'SESSION_STATUS_IDLE', status_bucket: 'SESSION_STATUS_BUCKET_WORKING', updated_at: at(0.1) },
   ]
   const sessions = track(raw)
 
   expect(waitingOldestFirst(sessions).map(s => s.id)).toEqual(['w9', 'w7', 'w5', 'w3', 'w2', 'w1'])
-  expect(running(sessions).map(s => s.id)).toEqual(['old-running'])
+  expect(running(sessions, NOW).map(s => s.id)).toEqual(['subagents', 'old-running'])
   expect(recentlyActive(sessions, NOW).map(s => s.id)).toEqual(['w1', 'w2', 'w3'])
 })
 

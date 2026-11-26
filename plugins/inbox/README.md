@@ -13,7 +13,7 @@ It only works in Claude Code cloud sessions. The mod reads the session list from
 
 | Section | Contains | Order |
 | --- | --- | --- |
-| Running now | sessions in the middle of a turn | newest activity first |
+| Running now | sessions in the middle of a turn, or whose subagents still work after the turn ended | newest activity first |
 | Recently active (3 h) | idle sessions updated in the last three hours | newest activity first |
 | Waiting on you | sessions blocked on you, ready for review, or ending on a question to you | oldest first, five shown, `+ N more` folds out the rest |
 
@@ -37,8 +37,10 @@ pages of 35 and stops after six. The server sorts by creation date, newest first
 waits on you can be weeks old, so one page is not enough. Pages stay small because the engine does
 not hand a mod a reply as large as 100 sessions, about 50,000 characters.
 
-Running now goes by the session status alone. The board column `working` lags behind and still
-holds sessions that finished a while ago.
+A session whose turn has ended but whose subagents still work reads as idle with the board column
+`working`. Running now counts it while that column is set and the session was updated in the last
+15 minutes, and its card says `background work`. The 15 minutes keep a column that never clears
+from holding a session there for good.
 
 The mod keeps the list and the fold-out state in `$.state` for the current session and writes
 nothing anywhere else.

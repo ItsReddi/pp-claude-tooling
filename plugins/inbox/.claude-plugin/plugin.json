@@ -1,6 +1,6 @@
 {
   "name": "inbox",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pane beside the chat that lists your Claude Code cloud sessions that are running, recently active or waiting on you, with a count in the status line and a toast when a session starts waiting",
   "types": "./types/index.d.ts"
 }
