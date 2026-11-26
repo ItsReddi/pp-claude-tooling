@@ -1,6 +1,7 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 import {
+  CLOUD_ONLY,
   isSnoozed,
   newlyWaiting,
   readSnooze,
@@ -84,8 +85,10 @@ function engine(on: any, answer: () => unknown) {
   on('command.register', () => ({ value: { command: 'inbox' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('clock.every', () => ({ value: { cancel: () => {} } }))
+  on('clock.after', () => ({ value: { cancel: () => {} } }))
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
   on('clock.now', () => ({ value: NOW }))
+  on('mcp.connect', () => ({ value: { isConnected: true, server: 'claude-code-remote' } }))
   on('mcp.call', () => ({ value: answer() }))
 }
 
@@ -173,7 +176,7 @@ test('the extra waiting sessions fold out and back in', async ($, on) => {
   await ui.unmount()
 })
 
-test('a later page that does not parse keeps the last complete list and shows the error', async ($, on) => {
+test('a failed reload keeps the last list and shows the error behind a connection error badge', async ($, on) => {
   const firstLoad = {
     ccr: {
       data: [{ id: 'kept', title: 'Kept waiting', status_bucket: 'SESSION_STATUS_BUCKET_BLOCKED', updated_at: at(48) }],
@@ -197,7 +200,11 @@ test('a later page that does not parse keeps the last complete list and shows th
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Link', text: /Kept waiting/ })).toBeDefined()
   expect(await ui.find({ type: 'Link', text: /Newer/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /Loading failed: list_sessions returned no JSON/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Loading failed/ })).toBeUndefined()
+  expect((await ui.find({ key: 'connection-error' }))?.text).toBe('Connection error')
+  expect(await ui.find({ type: 'Text', text: /list_sessions returned no JSON/ })).toBeUndefined()
+  await ui.press({ key: 'connection-error' })
+  expect(await ui.find({ type: 'Text', text: /list_sessions returned no JSON/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -232,7 +239,9 @@ test('snooze and unsnooze from the pane set and clear the tag', async ($, on) =>
   on('command.register', () => ({ value: { command: 'inbox' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('clock.every', () => ({ value: undefined }))
+  on('clock.after', () => ({ value: undefined }))
   on('clock.now', () => ({ value: NOW }))
+  on('mcp.connect', () => ({ value: { isConnected: true, server: 'claude-code-remote' } }))
   on('mcp.call', (_: unknown, e: { tool: string; args: Record<string, unknown> }) => {
     if (e.tool === 'set_session_tags') {
       tagCalls.push(e.args)
@@ -275,4 +284,80 @@ test('a recently active session that is snoozed drops the also waiting label', a
   expect(await ui.find({ type: 'Link', text: /Recent question/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /also waiting on you/ })).toBeUndefined()
   await ui.unmount()
+})
+
+test('outside a cloud session nothing shows and /inbox says why', async ($, on) => {
+  const calls: string[] = []
+  on('command.register', () => ({ value: { command: 'inbox' } }))
+  on('ui.open', () => {
+    calls.push('ui.open')
+    return { value: { isPlaced: true } }
+  })
+  on('clock.every', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: NOW }))
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  on('mcp.connect', () => ({ value: { isConnected: false, reason: 'unlisted', message: 'no such server' } }))
+  on('mcp.call', () => {
+    calls.push('mcp.call')
+    return { value: { content: [], isError: true } }
+  })
+
+  await $.session.start({ cwd: '/', surface: 'vscode', isInteractive: true })
+  const reply = await $.command.run(RUN)
+
+  expect(reply.text).toBe(CLOUD_ONLY)
+  expect(calls).toEqual([])
+})
+
+const cloud = (on: any, clockStart: number, answers: (args: Record<string, unknown>) => unknown, connected: () => boolean) => {
+  const clock = mock.clock(on, { now: clockStart })
+  const listCalls: number[] = []
+  const opened: number[] = []
+  on('command.register', () => ({ value: { command: 'inbox' } }))
+  on('ui.open', () => {
+    opened.push(clock.now())
+    return { value: { isPlaced: true } }
+  })
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  on('mcp.connect', () =>
+    connected()
+      ? { value: { isConnected: true, server: 'claude-code-remote' } }
+      : { value: { isConnected: false, reason: 'unlisted', message: 'no such server' } },
+  )
+  on('mcp.call', (_: unknown, e: { args: Record<string, unknown> }) => {
+    listCalls.push(clock.now())
+    return { value: answers(e.args) }
+  })
+  return { clock, listCalls, opened }
+}
+
+test('a failed load is retried once after 30 seconds', async ($, on) => {
+  const { clock, listCalls } = cloud(on, NOW, () => ({ content: [{ type: 'text', text: 'down' }], isError: true }), () => true)
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.advance(31 * 1000)
+  await clock.advance(60 * 1000)
+
+  expect(listCalls).toEqual([NOW, NOW + 30 * 1000])
+})
+
+test('a cloud session whose server connects late opens the pane at the next tick', async ($, on) => {
+  let isUp = false
+  const page = { ccr: { data: [], has_more: false } }
+  const { clock, listCalls, opened } = cloud(
+    on,
+    NOW,
+    () => ({ content: [{ type: 'text', text: JSON.stringify(page) }], isError: false }),
+    () => isUp,
+  )
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.advance(1000)
+  expect(opened).toEqual([])
+
+  isUp = true
+  await clock.advance(5 * 60 * 1000)
+
+  expect(opened).toEqual([NOW + 5 * 60 * 1000])
+  expect(listCalls).toEqual([NOW + 5 * 60 * 1000])
 })

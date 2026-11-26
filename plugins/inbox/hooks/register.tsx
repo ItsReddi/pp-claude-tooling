@@ -4,8 +4,11 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 import type { Snapshot, Snooze, TrackedSession } from '../types'
 
 const PANE = 'inbox'
+const SERVER = 'claude-code-remote'
+export const CLOUD_ONLY = 'inbox needs the claude-code-remote server, which only Claude Code cloud sessions have.'
 const TITLE = 'Inbox'
 const REFRESH_MS = 5 * 60 * 1000
+const RETRY_MS = 30 * 1000
 const PAGES = 6
 const PAGE_SIZE = 35
 const MAX_WAITING = 5
@@ -26,6 +29,7 @@ const snapshot = atom(
 
 const showAllWaiting = atom({ plugin: 'inbox', key: 'showAllWaiting' } as const, false)
 const showSnoozed = atom({ plugin: 'inbox', key: 'showSnoozed' } as const, false)
+const showErrorDetail = atom({ plugin: 'inbox', key: 'showErrorDetail' } as const, false)
 const snoozeMenuFor = atom({ plugin: 'inbox', key: 'snoozeMenuFor' } as const, null as string | null)
 
 type RawSession = {
@@ -150,6 +154,7 @@ function age(iso: string, now: number): string {
 }
 
 let isFetching = false
+let isCloud = false
 let knownWaitingIds: Set<string> | null = null
 
 export function newlyWaiting(known: Set<string> | null, waiting: TrackedSession[]): TrackedSession[] {
@@ -173,7 +178,7 @@ function announce($: EngineInterface, waiting: TrackedSession[]): void {
 }
 
 async function setTags($: EngineInterface, id: string, add: string[], remove: string[]): Promise<void> {
-  const result = await $.mcp.call('claude-code-remote', 'set_session_tags', {
+  const result = await $.mcp.call(SERVER, 'set_session_tags', {
     session_ids: [id],
     ...(add.length > 0 ? { add } : {}),
     ...(remove.length > 0 ? { remove } : {}),
@@ -233,7 +238,7 @@ function untilDay(iso: string): string {
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`
 }
 
-async function refresh($: EngineInterface): Promise<void> {
+async function refresh($: EngineInterface, isRetry = false): Promise<void> {
   if (isFetching) {
     return
   }
@@ -242,7 +247,7 @@ async function refresh($: EngineInterface): Promise<void> {
     const raw: RawSession[] = []
     let after: string | undefined
     for (let page = 0; page < PAGES; page++) {
-      const result = await $.mcp.call('claude-code-remote', 'list_sessions', {
+      const result = await $.mcp.call(SERVER, 'list_sessions', {
         mine: true,
         limit: PAGE_SIZE,
         ...(after ? { after_id: after } : {}),
@@ -275,8 +280,34 @@ async function refresh($: EngineInterface): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await update($, snapshot, old => ({ ...old, error: message }))
+    if (!isRetry) {
+      $.clock.after(RETRY_MS, () => void refresh($, true))
+    }
   } finally {
     isFetching = false
+  }
+}
+
+async function hasSessionList($: EngineInterface): Promise<boolean> {
+  return (await $.mcp.connect(SERVER)).isConnected
+}
+
+async function startWhenCloud($: EngineInterface): Promise<boolean> {
+  if (isCloud) {
+    return true
+  }
+  if (!(await hasSessionList($))) {
+    return false
+  }
+  isCloud = true
+  void $.ui.open({ id: PANE, title: TITLE })
+
+  return true
+}
+
+async function tick($: EngineInterface): Promise<void> {
+  if (await startWhenCloud($)) {
+    await refresh($)
   }
 }
 
@@ -286,14 +317,17 @@ export const register: Register = on => {
       name: 'inbox',
       description: 'Open the inbox pane and refresh the session list',
     })
-    void $.ui.open({ id: PANE, title: TITLE })
-    void refresh($)
-    $.clock.every(REFRESH_MS, () => void refresh($))
+    isCloud = false
+    $.clock.every(REFRESH_MS, () => void tick($))
+    void tick($)
 
     return next(e)
   })
 
   on('command.run', { command: 'inbox' }, async $ => {
+    if (!(await startWhenCloud($))) {
+      return { text: CLOUD_ONLY }
+    }
     await $.ui.open({ id: PANE, title: TITLE })
     await refresh($)
     const { sessions } = await read($, snapshot)
@@ -309,6 +343,7 @@ export const register: Register = on => {
     const snoozed = waitingSnoozed(state.sessions, now)
     const isSnoozedShown = await read($, showSnoozed)
     const menuFor = await read($, snoozeMenuFor)
+    const isErrorShown = await read($, showErrorDetail)
     const busy = running(state.sessions, now)
     const recent = recentlyActive(state.sessions, now)
     const isLoaded = state.fetchedAt !== null
@@ -395,18 +430,46 @@ export const register: Register = on => {
 
     return (
       <Box key="root" flexDirection="column" gap="md">
-        <Box key="toolbar" flexDirection="row" gap="sm" alignItems="center">
-          <Button key="refresh" label="Refresh" onPress={() => {
-              void refresh($)
-            }} />
-          {isLoaded && (
-            <Text size="caption" dimColor>
-              Updated {standAge === 'now' ? 'just now' : `${standAge} ago`}
-            </Text>
+        <Box key="toolbar" flexDirection="row" gap="sm" alignItems="center" justifyContent="space-between">
+          <Box flexDirection="row" gap="sm" alignItems="center">
+            <Button key="refresh" label="Refresh" onPress={() => {
+                void refresh($)
+              }} />
+            {isLoaded && (
+              <Text size="caption" dimColor>
+                Updated {standAge === 'now' ? 'just now' : `${standAge} ago`}
+              </Text>
+            )}
+          </Box>
+          {isLoaded && state.error !== null && (
+            <Box flexDirection="row" gap="xs" alignItems="center">
+              <Text size="caption" color="error">
+                ●
+              </Text>
+              <Button
+                key="connection-error"
+                label="Connection error"
+                plain
+                onPress={() => update($, showErrorDetail, shown => !shown)}
+              />
+            </Box>
           )}
         </Box>
+        {isLoaded && state.error !== null && isErrorShown && (
+          <Box
+            key="error-detail"
+            borderStyle="round"
+            borderColor="error"
+            paddingX="sm"
+            paddingY="xs"
+          >
+            <Text size="footnote" color="error" maxLines={4}>
+              {state.error}
+            </Text>
+          </Box>
+        )}
         {!isLoaded && state.error === null && <Text dimColor>Loading sessions…</Text>}
-        {state.error !== null && <Text color="error">Loading failed: {state.error}</Text>}
+        {!isLoaded && state.error !== null && <Text color="error">Loading failed: {state.error}</Text>}
         {isLoaded && (
           <Box key="section-running" flexDirection="column" gap="sm">
             {heading('success', 'Running now', busy.length)}
