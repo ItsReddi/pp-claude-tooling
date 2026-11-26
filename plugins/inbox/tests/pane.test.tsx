@@ -1,6 +1,16 @@
 import { expect, test } from 'claude-code/testing'
 
-import { newlyWaiting, recentlyActive, running, track, waitingOldestFirst } from '../hooks/register'
+import {
+  isSnoozed,
+  newlyWaiting,
+  readSnooze,
+  recentlyActive,
+  running,
+  snoozeTag,
+  track,
+  waitingOldestFirst,
+  waitingOpen,
+} from '../hooks/register'
 
 const NOW = Date.parse('2026-11-26T08:00:00Z')
 
@@ -188,5 +198,64 @@ test('a later page that does not parse keeps the last complete list and shows th
   expect(await ui.find({ type: 'Link', text: /Kept waiting/ })).toBeDefined()
   expect(await ui.find({ type: 'Link', text: /Newer/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /Loading failed: list_sessions returned no JSON/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a snooze tag reads back, hides the session until it runs out, and lets new activity through', () => {
+  const tag = snoozeTag(NOW, 7)
+  expect(tag).toBe('inbox-snooze:2026-11-26T08:00:00Z/2026-12-03T08:00:00Z')
+  expect(readSnooze(['other', tag])).toEqual({ tag, at: '2026-11-26T08:00:00Z', until: '2026-12-03T08:00:00Z' })
+  expect(readSnooze(['inbox-snooze:garbage'])).toBeNull()
+
+  const [quiet, active] = track([
+    { id: 'quiet', title: 'quiet', status_bucket: 'SESSION_STATUS_BUCKET_BLOCKED', updated_at: at(2), tags: [tag] },
+    { id: 'active', title: 'active', status_bucket: 'SESSION_STATUS_BUCKET_BLOCKED', updated_at: at(-1), tags: [tag] },
+  ])
+  if (quiet === undefined || active === undefined) {
+    throw new Error('track dropped a session')
+  }
+
+  expect(isSnoozed(quiet, NOW)).toBe(true)
+  expect(isSnoozed(quiet, NOW + 8 * 24 * 3600000)).toBe(false)
+  expect(isSnoozed(active, NOW + 3600000)).toBe(false)
+  expect(waitingOpen([quiet, active], NOW + 3600000).map(s => s.id)).toEqual(['active'])
+})
+
+test('snooze and unsnooze from the pane set and clear the tag', async ($, on) => {
+  const page = {
+    ccr: {
+      data: [{ id: 'ask', title: 'Open question', status_bucket: 'SESSION_STATUS_BUCKET_BLOCKED', updated_at: at(30) }],
+      has_more: false,
+    },
+  }
+  const tagCalls: Record<string, unknown>[] = []
+  on('command.register', () => ({ value: { command: 'inbox' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('clock.every', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: NOW }))
+  on('mcp.call', (_: unknown, e: { tool: string; args: Record<string, unknown> }) => {
+    if (e.tool === 'set_session_tags') {
+      tagCalls.push(e.args)
+      return { value: { content: [{ type: 'text', text: '{"updated":1}' }], isError: false } }
+    }
+    return { value: { content: [{ type: 'text', text: JSON.stringify(page) }], isError: false } }
+  })
+  await $.command.run(RUN)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'snooze-ask' })
+  await ui.press({ key: 'snooze-ask-7' })
+
+  expect(tagCalls).toEqual([{ session_ids: ['ask'], add: ['inbox-snooze:2026-11-26T08:00:00Z/2026-12-03T08:00:00Z'] }])
+  expect(await ui.find({ type: 'Link', text: /Open question/ })).toBeUndefined()
+  expect((await ui.find({ key: 'toggle-snoozed' }))?.text).toBe('1 snoozed')
+
+  await ui.press({ key: 'toggle-snoozed' })
+  expect(await ui.find({ type: 'Text', text: /until 3 Dec/ })).toBeDefined()
+  await ui.press({ key: 'unsnooze-ask' })
+
+  expect(tagCalls[1]).toEqual({ session_ids: ['ask'], remove: ['inbox-snooze:2026-11-26T08:00:00Z/2026-12-03T08:00:00Z'] })
+  expect(await ui.find({ key: 'toggle-snoozed' })).toBeUndefined()
+  expect(await ui.find({ type: 'Link', text: /Open question/ })).toBeDefined()
   await ui.unmount()
 })
