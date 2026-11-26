@@ -21,6 +21,24 @@ The pane leaves out archived sessions. Each session is a card that links to it. 
 Waiting on you shows the open question and how long the session has waited, green under a day,
 orange from one day, red from seven.
 
+## Snooze
+
+Each card under Waiting on you has a small `Snooze` button. It offers 1, 7, 14 or 30 days. A
+snoozed session leaves the list, the status line count and the toasts. `N snoozed` at the bottom
+folds out the snoozed sessions with their end date and an `Unsnooze` button.
+
+The snooze is a tag on the session itself, such as
+`inbox-snooze:2026-11-26T11:20:00Z/2026-12-03T11:20:00Z`, set through `set_session_tags` on the
+`claude-code-remote` server. claude.ai keeps the tag, so every session that runs `inbox` sees the
+same snoozes. A local store would not do: it lives in the cloud container and goes with it.
+
+A snoozed session comes back early when it is updated after the snooze, so a new question in it
+is not missed. When the snooze runs out, it comes back with a toast. In both cases the mod removes
+the old tag on the next load. Setting a tag leaves the session's `updated_at` alone, so the age on
+the card stays right.
+
+## Status line and toasts
+
 Outside the pane, the status line under the prompt reads `12 sessions waiting` and disappears when
 nothing waits. A toast names each session that started waiting since the previous load. The first
 load after the session starts or the mod reloads stays quiet, otherwise every waiting session would
@@ -50,6 +68,8 @@ nothing anywhere else.
 - Sessions inside a claude.ai project never show up. `list_sessions` does not return them, and no
   session record carries a project name.
 - Everything in the pane is as old as the last load, at most five minutes.
+- If opening or reading a session ever moves its `updated_at`, looking at a snoozed session would
+  bring it back. The mod cannot tell that apart from new activity.
 - The open question is the session's own summary, in whatever language that session used.
 
 ## Develop

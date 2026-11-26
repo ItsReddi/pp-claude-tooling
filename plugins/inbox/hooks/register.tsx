@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Snapshot, TrackedSession } from '../types'
+import type { Snapshot, Snooze, TrackedSession } from '../types'
 
 const PANE = 'inbox'
 const TITLE = 'Inbox'
@@ -13,14 +13,20 @@ const WAIT_WARN_HOURS = 24
 const WAIT_ALARM_HOURS = 7 * 24
 const RECENT_MS = 3 * 60 * 60 * 1000
 const BACKGROUND_FRESH_MS = 15 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+const SNOOZE_PREFIX = 'inbox-snooze:'
+export const SNOOZE_DAYS = [1, 7, 14, 30] as const
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 const snapshot = atom(
   { plugin: 'inbox', key: 'snapshot' } as const,
   { sessions: [], fetchedAt: null, error: null } as Snapshot,
-  { shape: 'snapshot-3' },
+  { shape: 'snapshot-4' },
 )
 
 const showAllWaiting = atom({ plugin: 'inbox', key: 'showAllWaiting' } as const, false)
+const showSnoozed = atom({ plugin: 'inbox', key: 'showSnoozed' } as const, false)
+const snoozeMenuFor = atom({ plugin: 'inbox', key: 'snoozeMenuFor' } as const, null as string | null)
 
 type RawSession = {
   id: string
@@ -29,6 +35,7 @@ type RawSession = {
   status_bucket?: string
   updated_at?: string
   post_turn_summary?: { needs_action?: string }
+  tags?: string[]
 }
 
 type RawPage = { data?: RawSession[]; has_more?: boolean; last_id?: string }
@@ -43,6 +50,30 @@ export function parsePage(text: string): RawPage {
   const parsed = JSON.parse(text.slice(start, end + 1))
 
   return (parsed.ccr ?? parsed) as RawPage
+}
+
+const isoSeconds = (ms: number): string => `${new Date(ms).toISOString().slice(0, 19)}Z`
+
+export function snoozeTag(at: number, days: number): string {
+  return `${SNOOZE_PREFIX}${isoSeconds(at)}/${isoSeconds(at + days * DAY_MS)}`
+}
+
+export function readSnooze(tags: readonly string[]): Snooze | null {
+  const tag = tags.find(t => t.startsWith(SNOOZE_PREFIX))
+  const [at, until] = tag?.slice(SNOOZE_PREFIX.length).split('/') ?? []
+  if (tag === undefined || at === undefined || until === undefined || Number.isNaN(Date.parse(at)) || Number.isNaN(Date.parse(until))) {
+    return null
+  }
+
+  return { tag, at, until }
+}
+
+export function isSnoozed(s: TrackedSession, now: number): boolean {
+  return (
+    s.snooze !== null &&
+    Date.parse(s.snooze.until) > now &&
+    Date.parse(s.updatedAt) <= Date.parse(s.snooze.at)
+  )
 }
 
 export function track(raw: RawSession[]): TrackedSession[] {
@@ -62,6 +93,7 @@ export function track(raw: RawSession[]): TrackedSession[] {
         isBackgroundWorking: s.status_bucket === 'SESSION_STATUS_BUCKET_WORKING',
         ask,
         updatedAt: s.updated_at ?? '',
+        snooze: readSnooze(s.tags ?? []),
       }
     })
 }
@@ -70,6 +102,20 @@ export function waitingOldestFirst(sessions: TrackedSession[]): TrackedSession[]
   return sessions
     .filter(s => s.isWaiting)
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+}
+
+export function waitingOpen(sessions: TrackedSession[], now: number): TrackedSession[] {
+  return waitingOldestFirst(sessions).filter(s => !isSnoozed(s, now))
+}
+
+export function waitingSnoozed(sessions: TrackedSession[], now: number): TrackedSession[] {
+  return waitingOldestFirst(sessions)
+    .filter(s => isSnoozed(s, now))
+    .sort((a, b) => (a.snooze?.until ?? '').localeCompare(b.snooze?.until ?? ''))
+}
+
+export function staleSnoozes(sessions: TrackedSession[], now: number): TrackedSession[] {
+  return sessions.filter(s => s.snooze !== null && !isSnoozed(s, now))
 }
 
 function isActiveNow(s: TrackedSession, now: number): boolean {
@@ -110,16 +156,81 @@ export function newlyWaiting(known: Set<string> | null, waiting: TrackedSession[
   return known === null ? [] : waiting.filter(s => !known.has(s.id))
 }
 
-function announce($: EngineInterface, waiting: TrackedSession[]): void {
-  for (const s of newlyWaiting(knownWaitingIds, waiting)) {
-    $.ui.toast(`Waiting on you: ${s.title}`, { timeoutMs: 8000 })
-  }
-  knownWaitingIds = new Set(waiting.map(s => s.id))
+function showCount($: EngineInterface, waiting: TrackedSession[]): void {
   $.ui.status(
     waiting.length === 0
       ? undefined
       : `${waiting.length} ${waiting.length === 1 ? 'session' : 'sessions'} waiting`,
   )
+}
+
+function announce($: EngineInterface, waiting: TrackedSession[]): void {
+  for (const s of newlyWaiting(knownWaitingIds, waiting)) {
+    $.ui.toast(`Waiting on you: ${s.title}`, { timeoutMs: 8000 })
+  }
+  knownWaitingIds = new Set(waiting.map(s => s.id))
+  showCount($, waiting)
+}
+
+async function setTags($: EngineInterface, id: string, add: string[], remove: string[]): Promise<void> {
+  const result = await $.mcp.call('claude-code-remote', 'set_session_tags', {
+    session_ids: [id],
+    ...(add.length > 0 ? { add } : {}),
+    ...(remove.length > 0 ? { remove } : {}),
+  })
+  if (result.isError) {
+    const text = result.content.map(block => (block.type === 'text' ? block.text : '')).join('')
+    throw new Error(text || 'set_session_tags failed')
+  }
+}
+
+async function applySnooze($: EngineInterface, id: string, snooze: Snooze | null): Promise<void> {
+  await update($, snapshot, old => ({
+    ...old,
+    sessions: old.sessions.map(s => (s.id === id ? { ...s, snooze } : s)),
+  }))
+  const { sessions } = await read($, snapshot)
+  showCount($, waitingOpen(sessions, await $.clock.now()))
+}
+
+async function snoozeFor($: EngineInterface, s: TrackedSession, days: number): Promise<void> {
+  const tag = snoozeTag(await $.clock.now(), days)
+  try {
+    await update($, snoozeMenuFor, () => null)
+    await setTags($, s.id, [tag], s.snooze === null ? [] : [s.snooze.tag])
+    await applySnooze($, s.id, readSnooze([tag]))
+  } catch (error) {
+    $.ui.toast(`Snooze failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+async function unsnooze($: EngineInterface, s: TrackedSession): Promise<void> {
+  if (s.snooze === null) {
+    return
+  }
+  try {
+    await setTags($, s.id, [], [s.snooze.tag])
+    knownWaitingIds?.add(s.id)
+    await applySnooze($, s.id, null)
+  } catch (error) {
+    $.ui.toast(`Unsnooze failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+async function clearStaleSnoozes($: EngineInterface, sessions: TrackedSession[], now: number): Promise<void> {
+  for (const s of staleSnoozes(sessions, now)) {
+    try {
+      await setTags($, s.id, [], [s.snooze?.tag ?? ''])
+    } catch {
+      return
+    }
+  }
+}
+
+function untilDay(iso: string): string {
+  const d = new Date(iso)
+
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`
 }
 
 async function refresh($: EngineInterface): Promise<void> {
@@ -159,7 +270,8 @@ async function refresh($: EngineInterface): Promise<void> {
       fetchedAt,
       error: null,
     }))
-    announce($, waitingOldestFirst(sessions))
+    announce($, waitingOpen(sessions, fetchedAt))
+    void clearStaleSnoozes($, sessions, fetchedAt)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await update($, snapshot, old => ({ ...old, error: message }))
@@ -186,14 +298,17 @@ export const register: Register = on => {
     await refresh($)
     const { sessions } = await read($, snapshot)
 
-    return { text: `${waitingOldestFirst(sessions).length} sessions waiting on you.` }
+    return { text: `${waitingOpen(sessions, await $.clock.now()).length} sessions waiting on you.` }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Link, Text } = $.ui.resolve(e)
     const state = await read($, snapshot)
     const now = await $.clock.now()
-    const waiting = waitingOldestFirst(state.sessions)
+    const waiting = waitingOpen(state.sessions, now)
+    const snoozed = waitingSnoozed(state.sessions, now)
+    const isSnoozedShown = await read($, showSnoozed)
+    const menuFor = await read($, snoozeMenuFor)
     const busy = running(state.sessions, now)
     const recent = recentlyActive(state.sessions, now)
     const isLoaded = state.fetchedAt !== null
@@ -213,7 +328,14 @@ export const register: Register = on => {
       </Box>
     )
 
-    const card = (s: TrackedSession, accent: string, detail: string, ageColor?: string) => (
+    const card = (
+      s: TrackedSession,
+      accent: string,
+      detail: string,
+      ageColor?: string,
+      headerAction?: RenderChildren,
+      actions?: RenderChildren,
+    ) => (
       <Box
         key={s.id}
         flexDirection="column"
@@ -227,7 +349,8 @@ export const register: Register = on => {
           <Box flexShrink={1}>
             <Link href={`https://claude.ai/code/${s.id}`} label={s.title} />
           </Box>
-          <Box flexShrink={0}>
+          <Box flexDirection="row" gap="sm" alignItems="center" flexShrink={0}>
+            {headerAction}
             <Text size="footnote" tabular wrap="truncate" color={ageColor} dimColor={ageColor === undefined}>
               {age(s.updatedAt, now)}
             </Text>
@@ -238,8 +361,31 @@ export const register: Register = on => {
             {detail}
           </Text>
         )}
+        {actions}
       </Box>
     )
+
+    const snoozeButton = (s: TrackedSession) => (
+      <Button
+        key={`snooze-${s.id}`}
+        label={menuFor === s.id ? 'Cancel' : 'Snooze'}
+        plain
+        dimColor
+        onPress={() => update($, snoozeMenuFor, open => (open === s.id ? null : s.id))}
+      />
+    )
+
+    const snoozeChoices = (s: TrackedSession) =>
+      menuFor === s.id && (
+        <Box key={`snooze-row-${s.id}`} flexDirection="row" gap="sm" alignItems="center">
+          <Text size="footnote" dimColor>
+            Snooze for
+          </Text>
+          {SNOOZE_DAYS.map(days => (
+            <Button key={`snooze-${s.id}-${days}`} label={`${days} d`} plain onPress={() => void snoozeFor($, s, days)} />
+          ))}
+        </Box>
+      )
 
     const waitColor = (s: TrackedSession) => {
       const hours = (now - Date.parse(s.updatedAt)) / 3600000
@@ -266,7 +412,7 @@ export const register: Register = on => {
             {heading('success', 'Running now', busy.length)}
             {busy.length === 0 && <Text dimColor>No session running.</Text>}
             {busy.map(s =>
-              card(s, 'success', [s.isRunning ? '' : 'background work', s.isWaiting ? 'also waiting on you' : ''].filter(Boolean).join(' · ')),
+              card(s, 'success', [s.isRunning ? '' : 'background work', s.isWaiting && !isSnoozed(s, now) ? 'also waiting on you' : ''].filter(Boolean).join(' · ')),
             )}
           </Box>
         )}
@@ -275,7 +421,7 @@ export const register: Register = on => {
             {heading('inactive', 'Recently active (3 h)', recent.length)}
             {recent.length === 0 && <Text dimColor>None.</Text>}
             {recent.map(s =>
-              card(s, 'subtle', s.isWaiting ? 'also waiting on you' : ''),
+              card(s, 'subtle', s.isWaiting && !isSnoozed(s, now) ? 'also waiting on you' : ''),
             )}
           </Box>
         )}
@@ -285,7 +431,16 @@ export const register: Register = on => {
             {waiting.length === 0 && <Text dimColor>Nothing open.</Text>}
             {waiting
               .slice(0, isExpanded ? waiting.length : MAX_WAITING)
-              .map(s => card(s, 'warning', `${s.reason}${s.ask !== null ? ` · ${s.ask}` : ''}`, waitColor(s)))}
+              .map(s =>
+                card(
+                  s,
+                  'warning',
+                  `${s.reason}${s.ask !== null ? ` · ${s.ask}` : ''}`,
+                  waitColor(s),
+                  snoozeButton(s),
+                  snoozeChoices(s),
+                ),
+              )}
             {hidden > 0 && (
               <Box key="toggle-row" flexDirection="row">
                 <Button
@@ -295,6 +450,29 @@ export const register: Register = on => {
                 />
               </Box>
             )}
+            {snoozed.length > 0 && (
+              <Box key="snoozed-toggle-row" flexDirection="row">
+                <Button
+                  key="toggle-snoozed"
+                  label={isSnoozedShown ? 'Hide snoozed' : `${snoozed.length} snoozed`}
+                  onPress={() => update($, showSnoozed, value => !value)}
+                />
+              </Box>
+            )}
+            {isSnoozedShown &&
+              snoozed.map(s => (
+                <Box key={`snoozed-${s.id}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
+                  <Box flexShrink={1}>
+                    <Link href={`https://claude.ai/code/${s.id}`} label={s.title} />
+                  </Box>
+                  <Box flexDirection="row" gap="xs" alignItems="center" flexShrink={0}>
+                    <Text size="footnote" dimColor>
+                      until {untilDay(s.snooze?.until ?? '')}
+                    </Text>
+                    <Button key={`unsnooze-${s.id}`} label="Unsnooze" plain dimColor onPress={() => void unsnooze($, s)} />
+                  </Box>
+                </Box>
+              ))}
           </Box>
         )}
       </Box>
