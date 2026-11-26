@@ -4,6 +4,7 @@ export type TrackedSession = {
   isWaiting: boolean
   reason: 'waiting' | 'review'
   isRunning: boolean
+  isBackgroundWorking: boolean
   ask: string | null
   updatedAt: string
 }

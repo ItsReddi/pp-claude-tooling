@@ -12,11 +12,12 @@ const MAX_WAITING = 5
 const WAIT_WARN_HOURS = 24
 const WAIT_ALARM_HOURS = 7 * 24
 const RECENT_MS = 3 * 60 * 60 * 1000
+const BACKGROUND_FRESH_MS = 15 * 60 * 1000
 
 const snapshot = atom(
   { plugin: 'inbox', key: 'snapshot' } as const,
   { sessions: [], fetchedAt: null, error: null } as Snapshot,
-  { shape: 'snapshot-2' },
+  { shape: 'snapshot-3' },
 )
 
 const showAllWaiting = atom({ plugin: 'inbox', key: 'showAllWaiting' } as const, false)
@@ -58,6 +59,7 @@ export function track(raw: RawSession[]): TrackedSession[] {
         isWaiting: isBlocked || isReview || ask !== null,
         reason: isReview && !isBlocked ? 'review' : 'waiting',
         isRunning: s.session_status === 'SESSION_STATUS_RUNNING',
+        isBackgroundWorking: s.status_bucket === 'SESSION_STATUS_BUCKET_WORKING',
         ask,
         updatedAt: s.updated_at ?? '',
       }
@@ -70,15 +72,19 @@ export function waitingOldestFirst(sessions: TrackedSession[]): TrackedSession[]
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
 }
 
-export function running(sessions: TrackedSession[]): TrackedSession[] {
+function isActiveNow(s: TrackedSession, now: number): boolean {
+  return s.isRunning || (s.isBackgroundWorking && now - Date.parse(s.updatedAt) <= BACKGROUND_FRESH_MS)
+}
+
+export function running(sessions: TrackedSession[], now: number): TrackedSession[] {
   return sessions
-    .filter(s => s.isRunning)
+    .filter(s => isActiveNow(s, now))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
 
 export function recentlyActive(sessions: TrackedSession[], now: number): TrackedSession[] {
   return sessions
-    .filter(s => !s.isRunning && now - Date.parse(s.updatedAt) <= RECENT_MS)
+    .filter(s => !isActiveNow(s, now) && now - Date.parse(s.updatedAt) <= RECENT_MS)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
 
@@ -188,7 +194,7 @@ export const register: Register = on => {
     const state = await read($, snapshot)
     const now = await $.clock.now()
     const waiting = waitingOldestFirst(state.sessions)
-    const busy = running(state.sessions)
+    const busy = running(state.sessions, now)
     const recent = recentlyActive(state.sessions, now)
     const isLoaded = state.fetchedAt !== null
     const isExpanded = await read($, showAllWaiting)
@@ -260,7 +266,7 @@ export const register: Register = on => {
             {heading('success', 'Running now', busy.length)}
             {busy.length === 0 && <Text dimColor>No session running.</Text>}
             {busy.map(s =>
-              card(s, 'success', s.isWaiting ? 'also waiting on you' : ''),
+              card(s, 'success', [s.isRunning ? '' : 'background work', s.isWaiting ? 'also waiting on you' : ''].filter(Boolean).join(' · ')),
             )}
           </Box>
         )}
