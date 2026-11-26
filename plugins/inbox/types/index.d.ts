@@ -1,0 +1,21 @@
+export type TrackedSession = {
+  id: string
+  title: string
+  isWaiting: boolean
+  reason: 'waiting' | 'review'
+  isRunning: boolean
+  ask: string | null
+  updatedAt: string
+}
+
+export type Snapshot = {
+  sessions: TrackedSession[]
+  fetchedAt: number | null
+  error: string | null
+}
+
+declare module 'claude-code' {
+  interface PluginState {
+    'inbox': { snapshot: Shaped<Snapshot>; showAllWaiting: boolean }
+  }
+}
