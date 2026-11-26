@@ -161,3 +161,31 @@ test('the extra waiting sessions fold out and back in', async ($, on) => {
   expect(await ui.find({ type: 'Link', text: /Waiting 1$/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('a later page that does not parse keeps the last complete list and shows the error', async ($, on) => {
+  const firstLoad = {
+    ccr: {
+      data: [{ id: 'kept', title: 'Kept waiting', status_bucket: 'SESSION_STATUS_BUCKET_BLOCKED', updated_at: at(48) }],
+      has_more: false,
+    },
+  }
+  const pageOne = {
+    ccr: {
+      data: [{ id: 'new', title: 'Newer', status_bucket: 'SESSION_STATUS_BUCKET_COMPLETED', updated_at: at(1) }],
+      has_more: true,
+      last_id: 'new',
+    },
+  }
+  const replies = [JSON.stringify(firstLoad), JSON.stringify(pageOne), 'Error: result exceeds maximum allowed tokens']
+  let call = 0
+  engine(on, () => ({ content: [{ type: 'text', text: replies[call++] ?? '' }], isError: false }))
+
+  await $.command.run(RUN)
+  await $.command.run(RUN)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Link', text: /Kept waiting/ })).toBeDefined()
+  expect(await ui.find({ type: 'Link', text: /Newer/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Loading failed: list_sessions returned no JSON/ })).toBeDefined()
+  await ui.unmount()
+})

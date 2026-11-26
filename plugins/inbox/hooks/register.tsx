@@ -136,18 +136,10 @@ async function refresh($: EngineInterface): Promise<void> {
       if (result.isError) {
         throw new Error(text || 'list_sessions failed')
       }
-      let parsed: RawPage
-      try {
-        parsed =
-          result.structuredContent !== null && typeof result.structuredContent === 'object'
-            ? (((result.structuredContent as { ccr?: RawPage }).ccr ?? result.structuredContent) as RawPage)
-            : parsePage(text)
-      } catch (error) {
-        if (page > 0) {
-          break
-        }
-        throw error
-      }
+      const parsed: RawPage =
+        result.structuredContent !== null && typeof result.structuredContent === 'object'
+          ? (((result.structuredContent as { ccr?: RawPage }).ccr ?? result.structuredContent) as RawPage)
+          : parsePage(text)
       raw.push(...(parsed.data ?? []))
       if (!parsed.has_more || !parsed.last_id) {
         break
