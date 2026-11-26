@@ -8,6 +8,7 @@ A Claude Code plugin marketplace, `pp-claude-tooling`. Each plugin lives in its 
 | Plugin | What it does |
 | --- | --- |
 | [`tooling-retro`](plugins/tooling-retro/README.md) | Observes sessions for moments where skills, agents or repo tooling let the agent down, pushes structured observations to `chore/tooling-retro` and runs `/tooling-retro` over them |
+| [`inbox`](plugins/inbox/README.md) | Pane beside the chat that lists your Claude Code cloud sessions that are running, recently active or waiting on you, with a count in the status line and a toast when a session starts waiting |
 
 ## Install
 
