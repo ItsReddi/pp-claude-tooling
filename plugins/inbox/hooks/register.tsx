@@ -196,8 +196,8 @@ async function applySnooze($: EngineInterface, id: string, snooze: Snooze | null
 async function snoozeFor($: EngineInterface, s: TrackedSession, days: number): Promise<void> {
   const tag = snoozeTag(await $.clock.now(), days)
   try {
-    await setTags($, s.id, [tag], s.snooze === null ? [] : [s.snooze.tag])
     await update($, snoozeMenuFor, () => null)
+    await setTags($, s.id, [tag], s.snooze === null ? [] : [s.snooze.tag])
     await applySnooze($, s.id, readSnooze([tag]))
   } catch (error) {
     $.ui.toast(`Snooze failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -412,7 +412,7 @@ export const register: Register = on => {
             {heading('success', 'Running now', busy.length)}
             {busy.length === 0 && <Text dimColor>No session running.</Text>}
             {busy.map(s =>
-              card(s, 'success', [s.isRunning ? '' : 'background work', s.isWaiting ? 'also waiting on you' : ''].filter(Boolean).join(' · ')),
+              card(s, 'success', [s.isRunning ? '' : 'background work', s.isWaiting && !isSnoozed(s, now) ? 'also waiting on you' : ''].filter(Boolean).join(' · ')),
             )}
           </Box>
         )}
@@ -421,7 +421,7 @@ export const register: Register = on => {
             {heading('inactive', 'Recently active (3 h)', recent.length)}
             {recent.length === 0 && <Text dimColor>None.</Text>}
             {recent.map(s =>
-              card(s, 'subtle', s.isWaiting ? 'also waiting on you' : ''),
+              card(s, 'subtle', s.isWaiting && !isSnoozed(s, now) ? 'also waiting on you' : ''),
             )}
           </Box>
         )}

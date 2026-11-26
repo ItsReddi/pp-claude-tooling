@@ -247,6 +247,7 @@ test('snooze and unsnooze from the pane set and clear the tag', async ($, on) =>
   await ui.press({ key: 'snooze-ask-7' })
 
   expect(tagCalls).toEqual([{ session_ids: ['ask'], add: ['inbox-snooze:2026-11-26T08:00:00Z/2026-12-03T08:00:00Z'] }])
+  expect(await ui.find({ key: 'snooze-ask-7' })).toBeUndefined()
   expect(await ui.find({ type: 'Link', text: /Open question/ })).toBeUndefined()
   expect((await ui.find({ key: 'toggle-snoozed' }))?.text).toBe('1 snoozed')
 
@@ -257,5 +258,21 @@ test('snooze and unsnooze from the pane set and clear the tag', async ($, on) =>
   expect(tagCalls[1]).toEqual({ session_ids: ['ask'], remove: ['inbox-snooze:2026-11-26T08:00:00Z/2026-12-03T08:00:00Z'] })
   expect(await ui.find({ key: 'toggle-snoozed' })).toBeUndefined()
   expect(await ui.find({ type: 'Link', text: /Open question/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a recently active session that is snoozed drops the also waiting label', async ($, on) => {
+  const page = {
+    ccr: {
+      data: [{ id: 'recent', title: 'Recent question', status_bucket: 'SESSION_STATUS_BUCKET_BLOCKED', updated_at: at(1), tags: [snoozeTag(NOW - 1000, 7)] }],
+      has_more: false,
+    },
+  }
+  engine(on, () => ({ content: [{ type: 'text', text: JSON.stringify(page) }], isError: false }))
+  await $.command.run(RUN)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Link', text: /Recent question/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /also waiting on you/ })).toBeUndefined()
   await ui.unmount()
 })
